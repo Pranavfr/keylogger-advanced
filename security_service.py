@@ -56,6 +56,17 @@ except Exception as e:
     IMPORT_ERROR = f"TopLevel: {e}"
 
 
+
+# SINGLE INSTANCE LOCK
+# This prevents the "Endless Opening" issue by ensuring only ONE instance runs.
+try:
+    kernel32 = ctypes.windll.kernel32
+    mutex = kernel32.CreateMutexW(None, False, "Global\\StarkCoreServices_Mutex_v2_Unique")
+    if kernel32.GetLastError() == 183: # ERROR_ALREADY_EXISTS
+        sys.exit(0)
+except Exception:
+    pass # If mutex fails, we risk it (better than crashing)
+
 # ... (omitted code) ...
 
 finally:
